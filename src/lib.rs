@@ -1,45 +1,48 @@
 mod config;
 mod error;
+#[cfg(feature = "tap")]
+pub mod tap;
+
 pub use config::*;
 pub use error::*;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::thread;
+use std::time::Duration;
 use moka::policy::EvictionPolicy;
 
 // https://en.wikipedia.org/wiki/IEEE_802.1Q
 // TODO: immagine diagramma con DBra
 
-pub struct Switch {
+pub struct Switch<H: Hardware> {
     ingress: Ingress,
     egress: Egress,
     fowarding_table: Rc<RefCell<FowardingTable>>,
+    hardware: H,
 }
 
-impl Switch {
-    pub fn new(config: Config) -> Switch {
+impl<H: Hardware> Switch<H> {
+    pub fn new(config: Config, hardware: H) -> Self {
         let config = Rc::new(config);
         let forwarding_table = Rc::new(RefCell::new(FowardingTable::new(65536)));
         Switch {
             ingress: Ingress(config.clone()),
             egress: Egress { config, forwarding_table: forwarding_table.clone() },
             fowarding_table: forwarding_table,
+            hardware,
         }
     }
 
     pub fn run(&mut self) -> ! {
         loop {
-            let (port_num, buf) = Self::recv();
+            let (port_num, buf) = self.hardware.recv();
             if let Some(frame) = self.ingress.process(port_num, buf) {
                 self.fowarding_table.borrow_mut().update(frame.vlan_id, frame.frame.src, port_num);
-                self.egress.dispatch(frame);
+                self.egress.dispatch(frame, &mut self.hardware);
             }
         }
-    }
-
-    fn recv() -> (PortNumber, Vec<u8>) {
-        todo!()
     }
 }
 
@@ -120,7 +123,7 @@ struct Egress {
 }
 
 impl Egress {
-    fn dispatch(&self, frame: ScopedFrame) {
+    fn dispatch(&self, frame: ScopedFrame, hw: &mut impl Hardware) {
         if let Some(vlan_config) = self.config.vlans.get(&frame.vlan_id) {
             let known_port =  self.forwarding_table.borrow()
                 .lookup(frame.vlan_id, frame.frame.dst);
@@ -128,18 +131,14 @@ impl Egress {
             let untagged = frame.untagged();
             for &port_number in vlan_config.untagged_ports.iter()
                 .filter(|&&p| known_port.is_none() || p == known_port.unwrap()) {
-                Self::send(port_number, &untagged);
+                hw.send(port_number, &untagged);
             }
 
             let tagged = frame.tagged();
             for &port_number in vlan_config.tagged_ports.iter().filter(|&&p| known_port.is_none() || p == known_port.unwrap()) {
-                Self::send(port_number, &tagged);
+                hw.send(port_number, &tagged);
             }
         }
-    }
-
-    fn send(_port_number: PortNumber, _data: &[u8]) {
-        todo!()
     }
 }
 
@@ -169,6 +168,24 @@ impl FowardingTable {
                 .eviction_policy(EvictionPolicy::lru())
                 .build()
         }).insert(mac, port_number);
+    }
+}
+
+pub trait Hardware {
+    fn send(&mut self, port_number: PortNumber, data: &[u8]) -> Result<(), SwitchrError> ;
+    fn recv(&mut self) -> Result<(PortNumber, Vec<u8>), SwitchrError>;
+}
+
+pub struct DummyHardware;
+impl Hardware for DummyHardware {
+    fn send(&mut self, port_number: PortNumber, data: &[u8]) -> Result<(), SwitchrError> {
+        // Dummy
+    }
+
+    fn recv(&mut self) -> Result<(PortNumber, Vec<u8>), SwitchrError> {
+        loop {
+            thread::sleep(Duration::from_secs(1));
+        }
     }
 }
 
