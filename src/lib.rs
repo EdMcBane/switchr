@@ -1,53 +1,34 @@
+mod config;
+mod error;
+pub use config::*;
+pub use error::*;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::error::Error;
-use std::fmt::{Debug, Display, Formatter};
 use std::rc::Rc;
 use moka::policy::EvictionPolicy;
 
 // https://en.wikipedia.org/wiki/IEEE_802.1Q
 // TODO: immagine diagramma con DBra
 
-fn main() {
-    // TODO: validate config
-    // TODO: create builder
-    // TODO: "config" module
-    let config = Config {
-        ports: vec![
-            PortConfig { acceptable_frame_types: AcceptableFrameTypes::Untagged, pvid: VlanId::ONE },
-            PortConfig { acceptable_frame_types: AcceptableFrameTypes::Untagged, pvid: VlanId::ONE },
-            PortConfig { acceptable_frame_types: AcceptableFrameTypes::All, pvid: VlanId::ONE },
-            PortConfig { acceptable_frame_types: AcceptableFrameTypes::Untagged, pvid: VlanId::ONE },
-        ],
-        vlans: [
-            (VlanId::ONE, VlanConfig::new(vec![0,1,2,3], vec![])),
-            (VlanId::new(3003).unwrap(), VlanConfig::new(vec![], vec![])),
-        ].into_iter().collect()
-    };
-
-    Switch::new(4, config).run();
-}
-
-struct Switch {
-    ports: usize, // TODO: use to validate configuration
+pub struct Switch {
     ingress: Ingress,
     egress: Egress,
     fowarding_table: Rc<RefCell<FowardingTable>>,
 }
 
 impl Switch {
-    fn new(ports: usize, config: Config) -> Switch {
+    pub fn new(config: Config) -> Switch {
         let config = Rc::new(config);
         let forwarding_table = Rc::new(RefCell::new(FowardingTable::new(65536)));
         Switch {
-            ports,
             ingress: Ingress(config.clone()),
             egress: Egress { config, forwarding_table: forwarding_table.clone() },
             fowarding_table: forwarding_table,
         }
     }
 
-    fn run(&mut self) -> ! {
+    pub fn run(&mut self) -> ! {
         loop {
             let (port_num, buf) = Self::recv();
             if let Some(frame) = self.ingress.process(port_num, buf) {
@@ -62,58 +43,8 @@ impl Switch {
     }
 }
 
-pub struct Config {
-    pub ports: Vec<PortConfig>,
-    pub vlans: HashMap<VlanId, VlanConfig>,
-}
-
-pub struct PortConfig {
-    acceptable_frame_types: AcceptableFrameTypes,
-    pvid: VlanId
-}
-
-pub struct VlanConfig {
-    untagged_ports: Vec<usize>,
-    tagged_ports: Vec<usize>,
-}
-
-impl PortConfig {
-    pub fn new(acceptable_frame_types: AcceptableFrameTypes, pvid: VlanId) -> PortConfig {
-        PortConfig {
-            acceptable_frame_types,
-            pvid,
-        }
-    }
-}
-
-impl VlanConfig {
-    pub fn new(untagged_ports: Vec<usize>, tagged_ports: Vec<usize>) -> VlanConfig {
-        VlanConfig {
-            untagged_ports,
-            tagged_ports,
-        }
-    }
-}
-
-pub enum AcceptableFrameTypes {
-    Tagged,
-    Untagged,
-    All,
-}
-
-impl AcceptableFrameTypes {
-    pub(crate) fn accepts(&self, dot1q: &Option<VlanId>) -> bool {
-        match (self, dot1q) {
-            (AcceptableFrameTypes::All, _) => true,
-            (AcceptableFrameTypes::Tagged, Some(_)) => true,
-            (AcceptableFrameTypes::Untagged, None) => true,
-            _ => false,
-        }
-    }
-}
 
 struct Ingress(Rc<Config>);
-
 const ETH_TYPE_DOT1Q: u16 = 0x8100;
 
 impl Ingress {
@@ -130,14 +61,13 @@ impl Ingress {
         })
     }
 
-    pub fn parse_frame(data: Vec<u8>) -> Result<(Option<VlanId>, Frame), ParseError> { // TODO: return result
-        // TODO: check parsing
+    pub fn parse_frame(data: Vec<u8>) -> Result<(Option<VlanId>, Frame), SwitchrError> {
         let dst = data[0..6].try_into().unwrap();
         let src = data[6..12].try_into().unwrap();
         let eth_type = u16::from_be_bytes([data[12], data[13]]);
         let (dot1q, rest) = if eth_type == ETH_TYPE_DOT1Q {
             let vid = u16::from_be_bytes([data[14], data[15]]) & 0xFFF;
-            (Some(VlanId(vid)), data[16..].to_vec())
+            (Some(vid.try_into().unwrap()), data[16..].to_vec())
         } else {
             (None, data[12..].to_vec())
         };
@@ -148,17 +78,6 @@ impl Ingress {
         }))
     }
 }
-
-#[derive(Debug)]
-struct ParseError;
-
-impl Display for ParseError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ParseError")
-    }
-}
-
-impl Error for ParseError {}
 
 struct ScopedFrame {
     vlan_id: VlanId,
@@ -223,26 +142,6 @@ impl Egress {
         todo!()
     }
 }
-type PortNumber = usize;
-
-// Potential zero-val optimization using NonZeroU16
-#[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
-pub struct VlanId(u16);
-
-
-impl VlanId {
-    const ONE: VlanId = VlanId(1);
-
-    pub fn new(vlan_id: u16) -> Option<Self> {
-        Some(vlan_id)
-            .filter(|&vlan_id| vlan_id > 0 && vlan_id < 4096)
-            .map(|v| Self(v))
-    }
-
-    fn to_u16(&self) -> u16 {
-        self.0
-    }
-}
 
 
 #[derive(Default)]
@@ -276,12 +175,12 @@ impl FowardingTable {
 #[cfg(test)]
 mod tests {
     use std::error::Error;
-    use crate::{Ingress, VlanId};
+    use super::*;
 
     #[test]
     fn parse_eth_ip() -> Result<(), Box<dyn Error>> {
         let packet = hex::decode("003018051cc074563cffd2780800")?;
-        let (dot1q, frame) = Ingress::parse(packet);
+        let (dot1q, frame) = Ingress::parse_frame(packet)?;
         assert_eq!(dot1q, None);
         assert_eq!(frame.dst, [0x00, 0x30, 0x18, 0x05, 0x1c, 0xc0]);
         assert_eq!(frame.src, [0x74, 0x56, 0x3c, 0xff, 0xd2, 0x78]);
@@ -292,8 +191,8 @@ mod tests {
     #[test]
     fn parse_eth_dot1q_ip() -> Result<(), Box<dyn Error>> {
         let packet = hex::decode("001562643341001c582364c18100000a0800")?;
-        let (dot1q, frame) = Ingress::parse(packet);
-        assert_eq!(dot1q, Some(VlanId(10)));
+        let (dot1q, frame) = Ingress::parse_frame(packet)?;
+        assert_eq!(dot1q, Some(10.try_into().unwrap()));
         assert_eq!(frame.dst, [0x00, 0x15, 0x62, 0x64, 0x33, 0x41]);
         assert_eq!(frame.src, [0x00, 0x1c, 0x58, 0x23, 0x64, 0xc1]);
         assert_eq!(frame.rest[0..2], [0x8, 0x00]);
