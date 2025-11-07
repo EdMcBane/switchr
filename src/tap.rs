@@ -17,28 +17,32 @@ impl TapHardware {
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
         let taps = runtime.block_on(async {
             let taps = (0..num_ports).map(|i| {
-                let tx = tx.clone();
                 let tap = Arc::new(Tun::builder()
                     .tap()
                     .name(&format!("switchr{}", i))
                     .up()
                     .build()?.into_iter().next().unwrap());
-                let task_tap = tap.clone();
-                runtime.spawn(async move {
-                    loop {
-                        let mut buffer = vec![0; 2048];
-                        let result = task_tap.recv(&mut buffer).await
-                            .map(|s| { buffer.truncate(s); (i, buffer) })
-                            .map_err(Into::into);
-                        tx.send(result).await.unwrap()
-                    }
-                });
+                runtime.spawn({
+                    let tx = tx.clone();
+                    let tap = tap.clone();
+                    async move {
+                        loop {
+                            let mut buffer = vec![0; 2048];
+                            let result = tap.recv(&mut buffer).await
+                                .map(|s| { buffer.truncate(s); (i, buffer) })
+                                .map_err(Into::into);
+                            tx.send(result).await.unwrap()
+                        }}});
                 Ok(tap)
             }).collect::<Result<Vec<_>, SwitchrError>>()?;
             Ok::<_, SwitchrError>(taps)
         })?;
 
-        Ok(TapHardware { rt: runtime, rx, taps })
+        Ok(TapHardware {
+            rt: runtime,
+            rx,
+            taps
+        })
     }
 }
 
