@@ -25,10 +25,10 @@ impl VlanId {
 }
 
 impl TryFrom<u16> for VlanId {
-    type Error = ();
+    type Error = SwitchrError;
 
     fn try_from(value: u16) -> Result<Self, Self::Error> {
-        Self::new(value).ok_or(())
+        Self::new(value).ok_or(SwitchrError::InvalidVlan)
     }
 }
 

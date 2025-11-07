@@ -4,6 +4,7 @@ use std::fmt::{Display, Formatter};
 #[derive(Debug)]
 pub enum SwitchrError {
     ParseError(String),
+    InvalidVlan,
     BadConfig(String),
     Generic(Box<dyn Error + Send + Sync>),
     Closed,
