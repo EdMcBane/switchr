@@ -1,36 +1,66 @@
-use std::io::Error;
-use tappers::{DeviceState, Interface, Tap};
+use std::sync::Arc;
+use tokio::runtime::Runtime;
+use tokio::sync::mpsc::Receiver;
+use tokio_tun::Tun;
 use crate::{Hardware, PortNumber, SwitchrError};
 
-pub struct TapHardware(Vec<Tap>);
+pub struct TapHardware {
+    rt: Runtime,
+    rx: Receiver<Result<(PortNumber, Vec<u8>), SwitchrError>>,
+    taps: Vec<Arc<Tun>>,
+}
+
 
 impl TapHardware {
     pub fn new(num_ports: usize) -> Result<TapHardware, SwitchrError> {
-        let taps = (0..num_ports).map(|i| {
-            let if_name = Interface::new(format!("switchr{}", i))?;
-            let mut tap = Tap::new_named(if_name)?;
-            tap.set_state(DeviceState::Up)?;
-            Ok(tap)
-        }).collect::<Result<Vec<_>, SwitchrError>>()?;
-        Ok(TapHardware(taps))
+        let runtime = tokio::runtime::Runtime::new()?;
+        let (tx, rx) = tokio::sync::mpsc::channel(1024);
+        let taps = runtime.block_on(async {
+            let taps = (0..num_ports).map(|i| {
+                let tx = tx.clone();
+                let tap = Arc::new(Tun::builder()
+                    .tap()
+                    .name(&format!("switchr{}", i))
+                    .up()
+                    .build()?.into_iter().next().unwrap());
+                let task_tap = tap.clone();
+                runtime.spawn(async move {
+                    loop {
+                        let mut buffer = vec![0; 2048];
+                        let result = task_tap.recv(&mut buffer).await
+                            .map(|s| { buffer.truncate(s); (i, buffer) })
+                            .map_err(Into::into);
+                        tx.send(result).await.unwrap()
+                    }
+                });
+                Ok(tap)
+            }).collect::<Result<Vec<_>, SwitchrError>>()?;
+            Ok::<_, SwitchrError>(taps)
+        })?;
+
+        Ok(TapHardware { rt: runtime, rx, taps })
     }
 }
 
 impl Hardware for TapHardware {
     fn send(&mut self, port_number: PortNumber, data: &[u8]) -> Result<(), SwitchrError> {
-        self.0[port_number].send(data)?;
+        self.rt.block_on(self.taps[port_number].send(data))?;
         Ok(())
     }
 
     fn recv(&mut self) -> Result<(PortNumber, Vec<u8>), SwitchrError> {
-        for port in self.0.iter_mut() {
-            port.recv()
-        }
+        self.rt.block_on(self.rx.recv()).unwrap_or(Err(SwitchrError::Closed))
+    }
+}
+
+impl From<tokio_tun::Error> for SwitchrError {
+    fn from(value: tokio_tun::Error) -> Self {
+        SwitchrError::Generic(Box::new(value))
     }
 }
 
 impl From<std::io::Error> for SwitchrError {
-    fn from(value: Error) -> Self {
-        SwitchrError::Io(value)
+    fn from(value: std::io::Error) -> Self {
+        SwitchrError::Generic(Box::new(value))
     }
 }

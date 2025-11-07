@@ -1,4 +1,5 @@
-use switchr::{ConfigBuilder, DummyHardware, FrameTypes, PortConfig, Switch, SwitchrError, VlanConfig, VlanId};
+use switchr::{ConfigBuilder, FrameTypes, PortConfig, Switch, SwitchrError, VlanConfig, VlanId};
+use switchr::tap::TapHardware;
 
 fn main() -> Result<(), SwitchrError> {
     let config = ConfigBuilder::new()
@@ -12,5 +13,5 @@ fn main() -> Result<(), SwitchrError> {
         .with_vlan(VlanId::new(3003).unwrap(), VlanConfig::new(vec![], vec![]))
         .build()?;
 
-    Switch::new(config, DummyHardware).run();
+    Switch::new(config, TapHardware::new(4)?).run()
 }

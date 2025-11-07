@@ -5,7 +5,8 @@ use std::fmt::{Display, Formatter};
 pub enum SwitchrError {
     ParseError(String),
     BadConfig(String),
-    Io(std::io::Error),
+    Generic(Box<dyn Error + Send + Sync>),
+    Closed,
 }
 
 impl Display for SwitchrError {

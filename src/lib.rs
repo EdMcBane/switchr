@@ -35,12 +35,12 @@ impl<H: Hardware> Switch<H> {
         }
     }
 
-    pub fn run(&mut self) -> ! {
+    pub fn run(&mut self) -> Result<(), SwitchrError> {
         loop {
-            let (port_num, buf) = self.hardware.recv();
+            let (port_num, buf) = self.hardware.recv()?;
             if let Some(frame) = self.ingress.process(port_num, buf) {
                 self.fowarding_table.borrow_mut().update(frame.vlan_id, frame.frame.src, port_num);
-                self.egress.dispatch(frame, &mut self.hardware);
+                self.egress.dispatch(frame, &mut self.hardware)?;
             }
         }
     }
@@ -123,7 +123,10 @@ struct Egress {
 }
 
 impl Egress {
-    fn dispatch(&self, frame: ScopedFrame, hw: &mut impl Hardware) {
+    fn dispatch(&self, frame: ScopedFrame, hw: &mut impl Hardware) -> Result<(), SwitchrError> {
+        // FIXME: no forwarding through ingress port
+        // FIXME: handling of broadcast
+
         if let Some(vlan_config) = self.config.vlans.get(&frame.vlan_id) {
             let known_port =  self.forwarding_table.borrow()
                 .lookup(frame.vlan_id, frame.frame.dst);
@@ -131,14 +134,15 @@ impl Egress {
             let untagged = frame.untagged();
             for &port_number in vlan_config.untagged_ports.iter()
                 .filter(|&&p| known_port.is_none() || p == known_port.unwrap()) {
-                hw.send(port_number, &untagged);
+                hw.send(port_number, &untagged)?;
             }
 
             let tagged = frame.tagged();
             for &port_number in vlan_config.tagged_ports.iter().filter(|&&p| known_port.is_none() || p == known_port.unwrap()) {
-                hw.send(port_number, &tagged);
+                hw.send(port_number, &tagged)?;
             }
         }
+        Ok(())
     }
 }
 
@@ -178,8 +182,8 @@ pub trait Hardware {
 
 pub struct DummyHardware;
 impl Hardware for DummyHardware {
-    fn send(&mut self, port_number: PortNumber, data: &[u8]) -> Result<(), SwitchrError> {
-        // Dummy
+    fn send(&mut self, _port_number: PortNumber, _data: &[u8]) -> Result<(), SwitchrError> {
+        Ok(())
     }
 
     fn recv(&mut self) -> Result<(PortNumber, Vec<u8>), SwitchrError> {
