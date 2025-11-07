@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::error::SwitchrError;
+use std::collections::HashMap;
 
 pub struct Config {
     pub ports: Vec<PortConfig>,
@@ -16,7 +16,7 @@ impl VlanId {
     pub fn new(vlan_id: u16) -> Option<Self> {
         Some(vlan_id)
             .filter(|&vlan_id| vlan_id > 0 && vlan_id < 4096)
-            .map(|v| Self(v))
+            .map(Self)
     }
 
     pub fn to_u16(&self) -> u16 {
@@ -34,10 +34,9 @@ impl TryFrom<u16> for VlanId {
 
 pub type PortNumber = usize;
 
-
 pub struct PortConfig {
     pub(crate) acceptable_frame_types: FrameTypes,
-    pub(crate) pvid: VlanId
+    pub(crate) pvid: VlanId,
 }
 
 pub struct VlanConfig {
@@ -71,6 +70,7 @@ pub enum FrameTypes {
 
 impl FrameTypes {
     pub(crate) fn accepts(&self, dot1q: &Option<VlanId>) -> bool {
+        #[allow(clippy::match_like_matches_macro)]
         match (self, dot1q) {
             (FrameTypes::All, _) => true,
             (FrameTypes::Tagged, Some(_)) => true,
@@ -84,14 +84,14 @@ pub struct ConfigBuilder {
     config: Config,
 }
 
-
 impl ConfigBuilder {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         ConfigBuilder {
             config: Config {
                 ports: Default::default(),
                 vlans: Default::default(),
-            }
+            },
         }
     }
 
@@ -106,13 +106,17 @@ impl ConfigBuilder {
     }
 
     pub fn build(self) -> Result<Config, SwitchrError> {
-        if self.config.ports.len() == 0 {
+        if self.config.ports.is_empty() {
             return Err(SwitchrError::BadConfig("No ports provided".into()));
         }
         for vlan_conf in self.config.vlans.values() {
-            for &port in vlan_conf.tagged_ports.iter().chain(vlan_conf.untagged_ports.iter()) {
+            for &port in vlan_conf
+                .tagged_ports
+                .iter()
+                .chain(vlan_conf.untagged_ports.iter())
+            {
                 if port >= self.config.ports.len() {
-                    return Err(SwitchrError::BadConfig(format!("Invalid port {}", port)));
+                    return Err(SwitchrError::BadConfig(format!("Invalid port {port}")));
                 }
             }
         }

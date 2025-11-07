@@ -6,12 +6,12 @@ pub mod tap;
 pub use config::*;
 pub use error::*;
 
+use moka::policy::EvictionPolicy;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::thread;
 use std::time::Duration;
-use moka::policy::EvictionPolicy;
 
 // https://en.wikipedia.org/wiki/IEEE_802.1Q
 // TODO: immagine diagramma con DBra
@@ -29,7 +29,10 @@ impl<H: Hardware> Switch<H> {
         let forwarding_table = Rc::new(RefCell::new(FowardingTable::new(65536)));
         Switch {
             ingress: Ingress(config.clone()),
-            egress: Egress { config, forwarding_table: forwarding_table.clone() },
+            egress: Egress {
+                config,
+                forwarding_table: forwarding_table.clone(),
+            },
             fowarding_table: forwarding_table,
             hardware,
         }
@@ -39,13 +42,14 @@ impl<H: Hardware> Switch<H> {
         loop {
             let (port_num, buf) = self.hardware.recv()?;
             if let Some(frame) = self.ingress.process(port_num, buf) {
-                self.fowarding_table.borrow_mut().update(frame.vlan_id, frame.frame.src, port_num);
+                self.fowarding_table
+                    .borrow_mut()
+                    .update(frame.vlan_id, frame.frame.src, port_num);
                 self.egress.dispatch(frame, &mut self.hardware)?;
             }
         }
     }
 }
-
 
 struct Ingress(Rc<Config>);
 const ETH_TYPE_DOT1Q: u16 = 0x8100;
@@ -74,11 +78,7 @@ impl Ingress {
         } else {
             (None, data[12..].to_vec())
         };
-        Ok((dot1q, Frame {
-            dst,
-            src,
-            rest,
-        }))
+        Ok((dot1q, Frame { dst, src, rest }))
     }
 }
 
@@ -128,17 +128,26 @@ impl Egress {
         // FIXME: handling of broadcast
 
         if let Some(vlan_config) = self.config.vlans.get(&frame.vlan_id) {
-            let known_port =  self.forwarding_table.borrow()
+            let known_port = self
+                .forwarding_table
+                .borrow()
                 .lookup(frame.vlan_id, frame.frame.dst);
 
             let untagged = frame.untagged();
-            for &port_number in vlan_config.untagged_ports.iter()
-                .filter(|&&p| known_port.is_none() || p == known_port.unwrap()) {
+            for &port_number in vlan_config
+                .untagged_ports
+                .iter()
+                .filter(|&&p| known_port.is_none() || p == known_port.unwrap())
+            {
                 hw.send(port_number, &untagged)?;
             }
 
             let tagged = frame.tagged();
-            for &port_number in vlan_config.tagged_ports.iter().filter(|&&p| known_port.is_none() || p == known_port.unwrap()) {
+            for &port_number in vlan_config
+                .tagged_ports
+                .iter()
+                .filter(|&&p| known_port.is_none() || p == known_port.unwrap())
+            {
                 hw.send(port_number, &tagged)?;
             }
         }
@@ -146,19 +155,17 @@ impl Egress {
     }
 }
 
-
 #[derive(Default)]
 struct FowardingTable {
     size: u64,
-    caches: HashMap<VlanId, moka::sync::Cache<HwAddr, PortNumber>>
+    caches: HashMap<VlanId, moka::sync::Cache<HwAddr, PortNumber>>,
 }
 
 impl FowardingTable {
-
     fn new(size: u64) -> Self {
         Self {
             size,
-            caches: HashMap::new()
+            caches: HashMap::new(),
         }
     }
 
@@ -167,16 +174,19 @@ impl FowardingTable {
     }
 
     fn update(&mut self, vlan_id: VlanId, mac: HwAddr, port_number: PortNumber) {
-        self.caches.entry(vlan_id).or_insert_with(|| {
-            moka::sync::CacheBuilder::new(self.size)
-                .eviction_policy(EvictionPolicy::lru())
-                .build()
-        }).insert(mac, port_number);
+        self.caches
+            .entry(vlan_id)
+            .or_insert_with(|| {
+                moka::sync::CacheBuilder::new(self.size)
+                    .eviction_policy(EvictionPolicy::lru())
+                    .build()
+            })
+            .insert(mac, port_number);
     }
 }
 
 pub trait Hardware {
-    fn send(&mut self, port_number: PortNumber, data: &[u8]) -> Result<(), SwitchrError> ;
+    fn send(&mut self, port_number: PortNumber, data: &[u8]) -> Result<(), SwitchrError>;
     fn recv(&mut self) -> Result<(PortNumber, Vec<u8>), SwitchrError>;
 }
 
@@ -195,8 +205,8 @@ impl Hardware for DummyHardware {
 
 #[cfg(test)]
 mod tests {
-    use std::error::Error;
     use super::*;
+    use std::error::Error;
 
     #[test]
     fn parse_eth_ip() -> Result<(), Box<dyn Error>> {
