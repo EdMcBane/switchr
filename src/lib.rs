@@ -14,7 +14,6 @@ use std::thread;
 use std::time::Duration;
 
 // https://en.wikipedia.org/wiki/IEEE_802.1Q
-// TODO: immagine diagramma con DBra
 
 pub struct Switch<H: Hardware> {
     ingress: Ingress,
